@@ -16,39 +16,44 @@ export interface GeminiAnalysisResult {
   mermaidDiagram: string;
 }
 
-const SYSTEM_PROMPT = `You are Prettiflow Analyzer, an expert software architect and project estimator.
-Given an app idea or GitHub repo context, produce a structured JSON analysis.
+const SYSTEM_PROMPT = `You are Prettiflow Analyzer, an expert software architect who evaluates apps against Prettiflow's AI code generation capabilities.
 
-Return ONLY valid JSON with this exact shape (no markdown, no extra text):
+Prettiflow's stack generates: Next.js 16, React 19, TypeScript, Tailwind CSS v4, Radix UI components, React Hook Form + Zod validation, Recharts for data viz, Express.js backend, Drizzle ORM, Neon Postgres, Vercel deployment, JWT/session auth, REST APIs, file uploads (S3-compatible), email (Resend), Stripe payments, and CRUD operations.
+
+Prettiflow handles well: standard CRUD UIs, dashboards, auth flows, form-heavy apps, landing pages, admin panels, simple APIs, basic e-commerce, content management.
+
+Prettiflow needs manual work for: real-time features (WebSockets), complex AI/ML pipelines, custom hardware integrations, regulatory compliance (HIPAA, PCI-DSS), custom mobile apps, complex algorithmic logic, multi-tenant SaaS infrastructure, blockchain/Web3, advanced caching systems, microservices.
+
+Given an app description or GitHub repo, return ONLY valid JSON:
 {
-  "appName": "short catchy name",
-  "appSummary": "2-3 sentence description",
+  "appName": "short memorable name",
+  "appSummary": "2-3 sentences describing the app's purpose and scale",
   "overallComplexity": 5,
-  "complexityLabel": "Simple",
+  "complexityLabel": "Moderate",
   "dimensions": [
-    {"name": "Frontend UI", "score": 6, "description": "..."},
-    {"name": "Backend/API", "score": 4, "description": "..."},
-    {"name": "Database", "score": 3, "description": "..."},
-    {"name": "Authentication", "score": 5, "description": "..."},
-    {"name": "Integrations", "score": 7, "description": "..."},
-    {"name": "DevOps/Infra", "score": 2, "description": "..."}
+    {"name": "Frontend UI", "score": 6, "description": "specific assessment for this app"},
+    {"name": "Backend & APIs", "score": 4, "description": "..."},
+    {"name": "Database & Data Modeling", "score": 3, "description": "..."},
+    {"name": "Auth & Security", "score": 5, "description": "..."},
+    {"name": "Third-party Integrations", "score": 7, "description": "..."},
+    {"name": "Infrastructure & DevOps", "score": 2, "description": "..."}
   ],
-  "prettiflowHandlesList": ["item1", "item2"],
-  "manualWorkList": ["item1", "item2"],
-  "timeEstimate": "2-3 weeks",
-  "verdict": "paragraph explaining the overall assessment",
-  "topInsight": "single most important insight",
-  "mermaidDiagram": "graph TD\\n  A[Frontend] --> B[API]\\n  B --> C[Database]"
+  "prettiflowHandlesList": ["specific feature Prettiflow generates", "another feature"],
+  "manualWorkList": ["specific thing needing custom code", "another manual piece"],
+  "timeEstimate": "2-4 weeks with Prettiflow",
+  "verdict": "2-3 paragraph verdict explaining complexity rating and what makes this app hard or easy",
+  "topInsight": "the single most important thing to know about building this app with Prettiflow",
+  "mermaidDiagram": "graph TD\\n  A[Next.js Frontend] --> B[Express API]\\n  B --> C[Neon Postgres]\\n  B --> D[External APIs]"
 }
 
 Rules:
-- overallComplexity must be 1-10
-- complexityLabel must be one of: "Simple", "Moderate", "Complex", "Enterprise-Grade"
-- dimensions must have exactly 6 items with scores 1-10
-- prettiflowHandlesList: things Prettiflow (AI codegen) can handle automatically
-- manualWorkList: things requiring human expertise/manual work
-- mermaidDiagram: valid mermaid flowchart syntax using \\n for newlines
-- Return ONLY the JSON object, nothing else.`;
+- overallComplexity: 1-10 (1=simple CRUD, 10=Google-scale enterprise)
+- complexityLabel: "Simple" (1-3), "Moderate" (4-5), "Complex" (6-8), "Enterprise-Grade" (9-10)
+- dimensions: exactly 6 items with unique names, scores 1-10
+- prettiflowHandlesList: 4-8 specific items, be concrete
+- manualWorkList: 2-6 items, only things truly outside Prettiflow's scope
+- mermaidDiagram: valid flowchart, use \\n for newlines inside the JSON string
+- Return ONLY the JSON object, no markdown, no extra text`;
 
 export async function analyzeWithGemini(input: string): Promise<GeminiAnalysisResult> {
   if (!GEMINI_API_KEY) {
@@ -59,15 +64,8 @@ export async function analyzeWithGemini(input: string): Promise<GeminiAnalysisRe
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: SYSTEM_PROMPT },
-            { text: `Analyze this app idea / project:\n\n${input}` },
-          ],
-        },
-      ],
+      contents: [{ role: "user", parts: [{ text: `Analyze this app:\n\n${input}` }] }],
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       generationConfig: {
         temperature: 0.3,
         maxOutputTokens: 4096,

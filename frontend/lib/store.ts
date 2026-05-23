@@ -1,5 +1,6 @@
 import { and, desc, eq, gt, or } from "drizzle-orm";
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
+import { cookies } from "next/headers";
 import { db } from "./db";
 import { analyses, sessions, users } from "./db/schema";
 
@@ -76,6 +77,15 @@ function normalizeAnalysis(analysis: typeof analyses.$inferSelect): Analysis {
   };
 }
 
+export function publicUser(user: User): User {
+  return user;
+}
+
+async function getSessionToken(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get("session_token")?.value ?? null;
+}
+
 export async function createUser(email: string, name: string, password: string) {
   const normalizedEmail = email.trim().toLowerCase();
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -128,11 +138,13 @@ export async function createSession(userId: string) {
 }
 
 export async function getCurrentUser(token?: string | null) {
-  if (!token) {
+  const resolvedToken = token ?? (await getSessionToken());
+
+  if (!resolvedToken) {
     return null;
   }
 
-  const [session] = await db.select().from(sessions).where(eq(sessions.token, token)).limit(1);
+  const [session] = await db.select().from(sessions).where(eq(sessions.token, resolvedToken)).limit(1);
 
   if (!session) {
     return null;
@@ -145,6 +157,22 @@ export async function getCurrentUser(token?: string | null) {
 
   const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
   return user ? normalizeUser(user) : null;
+}
+
+export async function setSessionCookie(token: string): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.set("session_token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 30 * 24 * 60 * 60,
+    path: "/",
+  });
+}
+
+export async function clearSessionCookie(): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.delete("session_token");
 }
 
 export async function saveAnalysis(input: {
@@ -186,6 +214,10 @@ export async function getVisibleAnalyses(userId?: string | null) {
   return rows.map(normalizeAnalysis);
 }
 
+export async function listVisibleAnalyses(user: User | null): Promise<Analysis[]> {
+  return getVisibleAnalyses(user?.id ?? null);
+}
+
 export async function getAnalysisById(id: string, userId?: string | null) {
   const visibility = userId ? or(eq(analyses.isPublic, true), eq(analyses.userId, userId)) : eq(analyses.isPublic, true);
   const [analysis] = await db
@@ -195,6 +227,10 @@ export async function getAnalysisById(id: string, userId?: string | null) {
     .limit(1);
 
   return analysis ? normalizeAnalysis(analysis) : null;
+}
+
+export async function getVisibleAnalysis(id: string, user: User | null): Promise<Analysis | null> {
+  return getAnalysisById(id, user?.id ?? null);
 }
 
 export async function deleteExpiredSessions() {

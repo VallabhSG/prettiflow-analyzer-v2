@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser, listVisibleAnalyses } from "@/lib/store";
+import { getCurrentUser, getVisibleAnalyses } from "@/lib/store";
 
 export async function GET() {
   const user = await getCurrentUser();
-  const analyses = await listVisibleAnalyses(user);
-  const publicAnalyses = analyses.map(({ user_email: _userEmail, ...analysis }) => analysis);
+  const analyses = await getVisibleAnalyses(user?.id ?? null);
 
-  return NextResponse.json({ analyses: publicAnalyses });
+  return NextResponse.json({ analyses });
 }

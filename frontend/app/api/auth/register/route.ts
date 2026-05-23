@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createSession, createUser, publicUser, setSessionCookie } from "@/lib/store";
 
 export async function POST(request: Request) {
-  let body: { email?: unknown; password?: unknown };
+  let body: { email?: unknown; name?: unknown; password?: unknown };
 
   try {
     body = await request.json();
@@ -11,8 +11,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { email, password } = body;
-    const user = await createUser(String(email ?? ""), String(password ?? ""));
+    const { email, name, password } = body;
+    const user = await createUser(String(email ?? ""), String(name ?? ""), String(password ?? ""));
     const token = await createSession(user.id);
     await setSessionCookie(token);
     return NextResponse.json({ user: publicUser(user) });
