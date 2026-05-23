@@ -4,5 +4,7 @@ import { getCurrentUser, listVisibleAnalyses } from "@/lib/store";
 export async function GET() {
   const user = await getCurrentUser();
   const analyses = await listVisibleAnalyses(user);
-  return NextResponse.json({ analyses });
+  const publicAnalyses = analyses.map(({ user_email: _userEmail, ...analysis }) => analysis);
+
+  return NextResponse.json({ analyses: publicAnalyses });
 }

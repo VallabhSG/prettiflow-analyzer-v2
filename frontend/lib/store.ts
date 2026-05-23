@@ -1,205 +1,202 @@
-import { cookies } from "next/headers";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { mkdir, readFile, writeFile } from "fs/promises";
-import path from "path";
+import { and, desc, eq, gt, or } from "drizzle-orm";
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
+import { db } from "./db";
+import { analyses, sessions, users } from "./db/schema";
+
+const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+
+type AnalysisResult = Record<string, unknown>;
 
 export type User = {
   id: string;
   email: string;
-  passwordHash: string;
-  created_at: string;
+  name: string | null;
+  createdAt: string;
 };
 
 export type Analysis = {
   id: string;
-  idea: string;
-  score: number;
-  verdict: string;
-  summary: string;
-  scorecard: {
-    clarity: number;
-    feasibility: number;
-    market: number;
-    differentiation: number;
-    monetization: number;
-  };
-  strengths: string[];
-  risks: string[];
-  next_steps: string[];
-  is_public: boolean;
-  user_id: string | null;
-  user_email?: string | null;
-  created_at: string;
+  userId: string | null;
+  appName: string;
+  input: string;
+  inputType: string;
+  result: AnalysisResult;
+  provider: string;
+  complexityLabel: string;
+  overallComplexity: number;
+  isPublic: boolean;
+  createdAt: string;
 };
 
-type Session = {
-  token: string;
-  user_id: string;
-  created_at: string;
-};
-
-type Database = {
-  users: User[];
-  sessions: Session[];
-  analyses: Analysis[];
-};
-
-const dbPath = path.join(process.cwd(), ".data", "idea-scorecard.json");
-const sessionCookie = "idea_scorecard_session";
-
-async function readDb(): Promise<Database> {
-  try {
-    const raw = await readFile(dbPath, "utf8");
-    return JSON.parse(raw) as Database;
-  } catch {
-    return { users: [], sessions: [], analyses: [] };
-  }
-}
-
-async function writeDb(db: Database) {
-  await mkdir(path.dirname(dbPath), { recursive: true });
-  await writeFile(dbPath, JSON.stringify(db, null, 2));
-}
-
-function normalizeEmail(email: string) {
-  return email.trim().toLowerCase();
-}
-
-export function hashPassword(password: string) {
+function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(password, salt, 64).toString("hex");
   return `${salt}:${hash}`;
 }
 
-export function verifyPassword(password: string, stored: string) {
-  const [salt, hash] = stored.split(":");
-  if (!salt || !hash) return false;
-  const actual = Buffer.from(hash, "hex");
-  const candidate = scryptSync(password, salt, 64);
-  return actual.length === candidate.length && timingSafeEqual(actual, candidate);
+function verifyPassword(password: string, storedHash: string) {
+  const [salt, hash] = storedHash.split(":");
+
+  if (!salt || !hash) {
+    return false;
+  }
+
+  const hashBuffer = Buffer.from(hash, "hex");
+  const inputBuffer = scryptSync(password, salt, 64);
+
+  if (hashBuffer.length !== inputBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(hashBuffer, inputBuffer);
 }
 
-export async function createUser(email: string, password: string) {
-  const db = await readDb();
-  const normalized = normalizeEmail(email);
-  if (!normalized.includes("@")) throw new Error("Enter a valid email address.");
-  if (password.length < 8) throw new Error("Password must be at least 8 characters.");
-  if (db.users.some((user) => user.email === normalized)) throw new Error("An account with this email already exists.");
-  const user: User = {
-    id: crypto.randomUUID(),
-    email: normalized,
-    passwordHash: hashPassword(password),
-    created_at: new Date().toISOString(),
+function normalizeUser(user: typeof users.$inferSelect): User {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    createdAt: user.createdAt.toISOString(),
   };
-  db.users.push(user);
-  await writeDb(db);
-  return user;
+}
+
+function normalizeAnalysis(analysis: typeof analyses.$inferSelect): Analysis {
+  return {
+    id: analysis.id,
+    userId: analysis.userId,
+    appName: analysis.appName,
+    input: analysis.input,
+    inputType: analysis.inputType,
+    result: analysis.result as AnalysisResult,
+    provider: analysis.provider,
+    complexityLabel: analysis.complexityLabel,
+    overallComplexity: analysis.overallComplexity,
+    isPublic: analysis.isPublic,
+    createdAt: analysis.createdAt.toISOString(),
+  };
+}
+
+export async function createUser(email: string, name: string, password: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  if (!emailPattern.test(normalizedEmail)) {
+    throw new Error("Invalid email address.");
+  }
+
+  if (password.length > 128) {
+    throw new Error("Password must be 128 characters or fewer.");
+  }
+
+  const [user] = await db
+    .insert(users)
+    .values({
+      email: normalizedEmail,
+      name: name.trim() || null,
+      passwordHash: hashPassword(password),
+    })
+    .returning();
+
+  return normalizeUser(user);
 }
 
 export async function findUserByCredentials(email: string, password: string) {
-  const db = await readDb();
-  const user = db.users.find((item) => item.email === normalizeEmail(email));
-  if (!user || !verifyPassword(password, user.passwordHash)) return null;
-  return user;
+  const normalizedEmail = email.trim().toLowerCase();
+  const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+
+  if (!user || !verifyPassword(password, user.passwordHash)) {
+    return null;
+  }
+
+  return normalizeUser(user);
 }
 
 export async function createSession(userId: string) {
-  const db = await readDb();
-  const token = randomBytes(32).toString("hex");
-  db.sessions.push({ token, user_id: userId, created_at: new Date().toISOString() });
-  await writeDb(db);
-  return token;
+  const token = randomUUID();
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+
+  const [session] = await db
+    .insert(sessions)
+    .values({
+      userId,
+      token,
+      expiresAt,
+    })
+    .returning();
+
+  return session.token;
 }
 
-export async function setSessionCookie(token: string) {
-  const cookieStore = await cookies();
-  cookieStore.set(sessionCookie, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 30,
-  });
-}
-
-export async function clearSessionCookie() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(sessionCookie)?.value;
-  if (token) {
-    const db = await readDb();
-    db.sessions = db.sessions.filter((session) => session.token !== token);
-    await writeDb(db);
+export async function getCurrentUser(token?: string | null) {
+  if (!token) {
+    return null;
   }
-  cookieStore.delete(sessionCookie);
+
+  const [session] = await db.select().from(sessions).where(eq(sessions.token, token)).limit(1);
+
+  if (!session) {
+    return null;
+  }
+
+  if (session.expiresAt <= new Date()) {
+    await db.delete(sessions).where(eq(sessions.id, session.id));
+    return null;
+  }
+
+  const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
+  return user ? normalizeUser(user) : null;
 }
 
-export async function getCurrentUser() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(sessionCookie)?.value;
-  if (!token) return null;
-  const db = await readDb();
-  const session = db.sessions.find((item) => item.token === token);
-  if (!session) return null;
-  const user = db.users.find((item) => item.id === session.user_id);
-  return user ?? null;
+export async function saveAnalysis(input: {
+  userId?: string | null;
+  appName: string;
+  input: string;
+  inputType: string;
+  result: AnalysisResult;
+  provider: string;
+  complexityLabel: string;
+  overallComplexity: number;
+  isPublic?: boolean;
+}) {
+  const [analysis] = await db
+    .insert(analyses)
+    .values({
+      userId: input.userId ?? null,
+      appName: input.appName,
+      input: input.input,
+      inputType: input.inputType,
+      result: input.result,
+      provider: input.provider,
+      complexityLabel: input.complexityLabel,
+      overallComplexity: input.overallComplexity,
+      isPublic: input.isPublic ?? true,
+    })
+    .returning();
+
+  return normalizeAnalysis(analysis);
 }
 
-export function publicUser(user: User) {
-  return { id: user.id, email: user.email };
+export async function getVisibleAnalyses(userId?: string | null) {
+  const rows = await db
+    .select()
+    .from(analyses)
+    .where(userId ? or(eq(analyses.isPublic, true), eq(analyses.userId, userId)) : eq(analyses.isPublic, true))
+    .orderBy(desc(analyses.createdAt));
+
+  return rows.map(normalizeAnalysis);
 }
 
-export async function saveAnalysis(input: { idea: string; is_public: boolean; user: User | null }) {
-  const db = await readDb();
-  const analysis: Analysis = {
-    id: crypto.randomUUID(),
-    idea: input.idea.trim(),
-    score: 82,
-    verdict: "Promising with focused validation",
-    summary:
-      "This fixed demo analyzer sees a clear customer pain, a plausible product wedge, and enough monetization potential to justify customer interviews before building deeper AI scoring.",
-    scorecard: {
-      clarity: 8,
-      feasibility: 9,
-      market: 8,
-      differentiation: 7,
-      monetization: 9,
-    },
-    strengths: [
-      "Specific user segment and recurring workflow make the problem easy to validate.",
-      "Lightweight product surface can be prototyped quickly without heavy infrastructure.",
-      "Account-based persistence supports private drafts and public examples for sharing.",
-    ],
-    risks: [
-      "The market may already have strong incumbents with similar positioning.",
-      "Retention depends on proving repeated value after the initial novelty wears off.",
-      "The current score is a placeholder and should be replaced by real AI logic later.",
-    ],
-    next_steps: [
-      "Interview 8-12 target users and capture exact language around the pain.",
-      "Create a landing page with one measurable call to action.",
-      "Define the future AI rubric and compare it against expert manual reviews.",
-    ],
-    is_public: Boolean(input.user && input.is_public),
-    user_id: input.user?.id ?? null,
-    user_email: input.user?.email ?? null,
-    created_at: new Date().toISOString(),
-  };
-  db.analyses.unshift(analysis);
-  await writeDb(db);
-  return analysis;
+export async function getAnalysisById(id: string, userId?: string | null) {
+  const visibility = userId ? or(eq(analyses.isPublic, true), eq(analyses.userId, userId)) : eq(analyses.isPublic, true);
+  const [analysis] = await db
+    .select()
+    .from(analyses)
+    .where(and(eq(analyses.id, id), visibility))
+    .limit(1);
+
+  return analysis ? normalizeAnalysis(analysis) : null;
 }
 
-export async function listVisibleAnalyses(user: User | null) {
-  const db = await readDb();
-  return db.analyses
-    .filter((analysis) => analysis.is_public || (user && analysis.user_id === user.id))
-    .map((analysis) => ({ ...analysis, user_email: analysis.user_email ?? null }));
-}
-
-export async function getVisibleAnalysis(id: string, user: User | null) {
-  const db = await readDb();
-  const analysis = db.analyses.find((item) => item.id === id);
-  if (!analysis) return null;
-  if (!analysis.is_public && (!user || analysis.user_id !== user.id)) return null;
-  return analysis;
+export async function deleteExpiredSessions() {
+  await db.delete(sessions).where(gt(new Date(), sessions.expiresAt));
 }
