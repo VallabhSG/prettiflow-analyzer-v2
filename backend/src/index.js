@@ -1,9 +1,10 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { config } from "./lib/config.js";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = config.port;
 
 // Middleware
 app.use(cors());
@@ -21,6 +22,18 @@ app.get("/api/health", (req, res) => {
 
 // API routes will be added here by the agent
 // Example: app.use("/api/users", usersRouter);
+
+// API keys configuration endpoint (for health/verification)
+app.get("/api/config/status", (req, res) => {
+  res.json({
+    status: "ok",
+    services: {
+      gemini: !!config.geminiApiKey,
+      groq: !!config.groqApiKey,
+      github: !!config.githubToken,
+    },
+  });
+});
 
 // Start server
 app.listen(PORT, () => {
